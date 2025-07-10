@@ -7,6 +7,7 @@
 import random
 from dataclasses import dataclass
 from typing import List
+import logging
 
 from training.dataset.vos_segment_loader import LazySegments
 
@@ -40,7 +41,6 @@ class RandomUniformSampler(VOSSampler):
         self.reverse_time_prob = reverse_time_prob
 
     def sample(self, video, segment_loader, epoch=None):
-
         for retry in range(MAX_RETRIES):
             if len(video.frames) < self.num_frames:
                 raise Exception(
@@ -51,10 +51,9 @@ class RandomUniformSampler(VOSSampler):
             if random.uniform(0, 1) < self.reverse_time_prob:
                 # Reverse time
                 frames = frames[::-1]
-
             # Get first frame object ids
             visible_object_ids = []
-            loaded_segms = segment_loader.load(frames[0].frame_idx)
+            loaded_segms = segment_loader.load(frames[0].frame_idx)  # errored line
             if isinstance(loaded_segms, LazySegments):
                 # LazySegments for SA1BRawDataset
                 visible_object_ids = list(loaded_segms.keys())
@@ -64,7 +63,6 @@ class RandomUniformSampler(VOSSampler):
                 ).items():
                     if segment.sum():
                         visible_object_ids.append(object_id)
-
             # First frame needs to have at least a target to track
             if len(visible_object_ids) > 0:
                 break

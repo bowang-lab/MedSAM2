@@ -49,7 +49,6 @@ class VOSDataset(VisionDataset):
         self.target_segments_available = target_segments_available
 
     def _get_datapoint(self, idx):
-
         for retry in range(MAX_RETRIES):
             try:
                 if isinstance(idx, torch.Tensor):

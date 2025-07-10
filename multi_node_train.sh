@@ -34,14 +34,12 @@ config=configs/sam2.1_hiera_tiny_finetune512.yaml
 output_path=./exp_log/mnode_tiny
 
 # Function to run the training script
-srun --exclusive python training/train.py \
+python training/train.py \
         -c $config \
         --output-path $output_path \
         --use-cluster 0 \
-        --num-gpus $SLURM_GPUS_ON_NODE \
-        --num-nodes $SLURM_NNODES \
-        --master-addr $MASTER_ADDR \
-        --main-port $MASTER_PORT
+        --num-gpus 1 \
+        --num-nodes 1 \
 
 echo "training done"
 

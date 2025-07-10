@@ -27,7 +27,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument(
     '--checkpoint',
     type=str,
-    default="checkpoints/MedSAM2_latest.pt",
+    default="/home/lthpc/Next/MedSAM2/exp_log/MedSAM2_FLARE25_RECIST/checkpoints/checkpoint.pt",
     help='checkpoint path',
 )
 parser.add_argument(
@@ -41,7 +41,7 @@ parser.add_argument(
     '-i',
     '--imgs_path',
     type=str,
-    default="CT_DeepLesion/images",
+    default="/home/lthpc/Next/MedSAM2/data/validation_public_npz",
     help='imgs path',
 )
 parser.add_argument(
@@ -73,10 +73,12 @@ pred_save_dir = args.pred_save_dir
 os.makedirs(pred_save_dir, exist_ok=True)
 propagate_with_box = args.propagate_with_box
 
+
 def getLargestCC(segmentation):
     labels = measure.label(segmentation)
     largestCC = labels == np.argmax(np.bincount(labels.flat)[1:])+1
     return largestCC
+
 
 def dice_multi_class(preds, targets):
     smooth = 1.0
@@ -89,6 +91,7 @@ def dice_multi_class(preds, targets):
         intersection = (pred * target).sum()
         dices.append((2.0 * intersection + smooth) / (pred.sum() + target.sum() + smooth))
     return np.mean(dices)
+
 
 def show_mask(mask, ax, mask_color=None, alpha=0.5):
     """
@@ -129,31 +132,32 @@ def show_box(box, ax, edgecolor='blue'):
     """
     x0, y0 = box[0], box[1]
     w, h = box[2] - box[0], box[3] - box[1]
-    ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor=edgecolor, facecolor=(0,0,0,0), lw=2))     
+    ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor=edgecolor, facecolor=(0, 0, 0, 0), lw=2))
 
 
 def resize_grayscale_to_rgb_and_resize(array, image_size):
     """
     Resize a 3D grayscale NumPy array to an RGB image and then resize it.
-    
+
     Parameters:
         array (np.ndarray): Input array of shape (d, h, w).
         image_size (int): Desired size for the width and height.
-    
+
     Returns:
         np.ndarray: Resized array of shape (d, 3, image_size, image_size).
     """
     d, h, w = array.shape
     resized_array = np.zeros((d, 3, image_size, image_size))
-    
+
     for i in range(d):
         img_pil = Image.fromarray(array[i].astype(np.uint8))
         img_rgb = img_pil.convert("RGB")
         img_resized = img_rgb.resize((image_size, image_size))
         img_array = np.array(img_resized).transpose(2, 0, 1)  # (3, image_size, image_size)
         resized_array[i] = img_array
-    
+
     return resized_array
+
 
 def mask2D_to_bbox(gt2D, max_shift=20):
     y_indices, x_indices = np.where(gt2D > 0)
@@ -167,6 +171,7 @@ def mask2D_to_bbox(gt2D, max_shift=20):
     y_max = min(H-1, y_max + bbox_shift)
     boxes = np.array([x_min, y_min, x_max, y_max])
     return boxes
+
 
 def mask3D_to_bbox(gt3D, max_shift=20):
     z_indices, y_indices, x_indices = np.where(gt3D > 0)
@@ -185,6 +190,9 @@ def mask3D_to_bbox(gt3D, max_shift=20):
     return boxes3d
 
 
+# initialized predictor
+predictor = build_sam2_video_predictor_npz(model_cfg, checkpoint)
+print(f"load model succ")
 DL_info = pd.read_csv('CT_DeepLesion/DeepLesion_Dataset_Info.csv')
 nii_fnames = sorted(os.listdir(imgs_path))
 nii_fnames = [i for i in nii_fnames if i.endswith('.nii.gz')]
@@ -194,8 +202,7 @@ seg_info = OrderedDict()
 seg_info['nii_name'] = []
 seg_info['key_slice_index'] = []
 seg_info['DICOM_windows'] = []
-# initialized predictor
-predictor = build_sam2_video_predictor_npz(model_cfg, checkpoint)
+
 
 for nii_fname in tqdm(nii_fnames):
     # get corresponding case info
@@ -205,7 +212,7 @@ for nii_fname in tqdm(nii_fnames):
     slice_range = ', '.join(slice_range)
     nii_image = sitk.ReadImage(join(imgs_path, nii_fname))
     nii_image_data = sitk.GetArrayFromImage(nii_image)
-    
+
     case_name = re.findall(r'^(\d{6}_\d{2}_\d{2})', nii_fname)[0]
     case_df = DL_info[
         DL_info['File_name'].str.contains(case_name) &
@@ -230,12 +237,12 @@ for nii_fname in tqdm(nii_fnames):
         bbox_coords = row['Bounding_boxes']
         bbox_coords = bbox_coords.split(',')
         bbox_coords = [int(float(coord)) for coord in bbox_coords]
-        #bbox_coords = expand_box(bbox_coords)
-        bbox = np.array(bbox_coords) # y_min, x_min, y_max, x_max
+        # bbox_coords = expand_box(bbox_coords)
+        bbox = np.array(bbox_coords)  # y_min, x_min, y_max, x_max
         bbox = np.array([bbox[1], bbox[0], bbox[3], bbox[2]])
 
         key_slice_idx_offset = key_slice_idx - slice_idx_start
-        key_slice_img = nii_image_data_pre[key_slice_idx_offset, :,:]
+        key_slice_img = nii_image_data_pre[key_slice_idx_offset, :, :]
 
         img_3D_ori = nii_image_data_pre
         assert np.max(img_3D_ori) < 256, f'input data should be in range [0, 255], but got {np.unique(img_3D_ori)}'
@@ -245,8 +252,8 @@ for nii_fname in tqdm(nii_fnames):
         img_resized = resize_grayscale_to_rgb_and_resize(img_3D_ori, 512)
         img_resized = img_resized / 255.0
         img_resized = torch.from_numpy(img_resized).cuda()
-        img_mean=(0.485, 0.456, 0.406)
-        img_std=(0.229, 0.224, 0.225)
+        img_mean = (0.485, 0.456, 0.406)
+        img_std = (0.229, 0.224, 0.225)
         img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None].cuda()
         img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None].cuda()
         img_resized -= img_mean
@@ -257,12 +264,12 @@ for nii_fname in tqdm(nii_fnames):
             inference_state = predictor.init_state(img_resized, video_height, video_width)
             if propagate_with_box:
                 _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
-                                                    inference_state=inference_state,
-                                                    frame_idx=key_slice_idx_offset,
-                                                    obj_id=1,
-                                                    box=bbox,
-                                                )
-            else: # gt
+                    inference_state=inference_state,
+                    frame_idx=key_slice_idx_offset,
+                    obj_id=1,
+                    box=bbox,
+                )
+            else:  # gt
                 pass
 
             for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
@@ -270,12 +277,12 @@ for nii_fname in tqdm(nii_fnames):
             predictor.reset_state(inference_state)
             if propagate_with_box:
                 _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
-                                                    inference_state=inference_state,
-                                                    frame_idx=key_slice_idx_offset,
-                                                    obj_id=1,
-                                                    box=bbox,
-                                                )
-            else: # gt
+                    inference_state=inference_state,
+                    frame_idx=key_slice_idx_offset,
+                    obj_id=1,
+                    box=bbox,
+                )
+            else:  # gt
                 pass
 
             for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, reverse=True):
@@ -283,7 +290,7 @@ for nii_fname in tqdm(nii_fnames):
             predictor.reset_state(inference_state)
         if np.max(segs_3D) > 0:
             segs_3D = getLargestCC(segs_3D)
-            segs_3D = np.uint8(segs_3D) 
+            segs_3D = np.uint8(segs_3D)
         sitk_image = sitk.GetImageFromArray(img_3D_ori)
         sitk_image.CopyInformation(nii_image)
         sitk_mask = sitk.GetImageFromArray(segs_3D)
@@ -299,6 +306,3 @@ for nii_fname in tqdm(nii_fnames):
 
     seg_info_df = pd.DataFrame(seg_info)
     seg_info_df.to_csv(join(pred_save_dir, 'tiny_seg_info202412.csv'), index=False)
-
-
-

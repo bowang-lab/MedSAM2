@@ -11,3 +11,6 @@ _C.*
 outputs/*
 checkpoints/*.pt
 *.pt
+exp_log/
+*result*
+*.out

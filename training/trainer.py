@@ -183,6 +183,9 @@ class Trainer:
         cuda = CudaConf(**cuda or {})
         self.where = 0.0
 
+        self.metric_dice = []
+        self.metric_iou = []
+
         self._infer_distributed_backend_if_none(distributed, accelerator)
 
         self._setup_device(accelerator)
@@ -381,9 +384,12 @@ class Trainer:
 
     def load_checkpoint(self):
         ckpt_path = get_resume_checkpoint(self.checkpoint_conf.save_dir)
+        logging.info(f"using ckpt_path:{ckpt_path}")
         if ckpt_path is None:
+            logging.info(f"ckpt_path is None, using pre-trained checkpoint")
             self._init_model_state()
         else:
+            logging.info(f"loading from ckpt path:{ckpt_path}")
             if self.checkpoint_conf.initialize_after_preemption:
                 self._call_model_initializer()
             self._load_resuming_checkpoint(ckpt_path)
@@ -471,7 +477,7 @@ class Trainer:
                 {f"Losses/{phase}_{key}_{k}": v for k, v in loss.items()}
             )
             loss = self._log_loss_detailed_and_return_core_loss(
-                loss, loss_log_str, self.steps[phase]
+                loss, loss_log_str, self.steps[phase], self.mode
             )
 
         if self.steps[phase] % self.logging_conf.log_scalar_frequency == 0:
@@ -497,6 +503,13 @@ class Trainer:
         return ret_tuple
 
     def run(self):
+        """Train/Val Main Entry
+
+        Keyword arguments:
+        argument -- description
+        Return: return_description
+        """
+
         assert self.mode in ["train", "train_only", "val"]
         if self.mode == "train":
             if self.epoch > 0:
@@ -572,6 +585,9 @@ class Trainer:
         del dataloader
         gc.collect()
         self.logger.log_dict(outs, self.epoch)  # Logged only on rank 0
+
+        logging.info(f"final avg dice:{sum(self.metric_dice)/len(self.metric_dice)}")
+        logging.info(f"final avg iou:{sum(self.metric_iou)/len(self.metric_iou)}")
 
         if self.distributed_rank == 0:
             with g_pathmgr.open(
@@ -1037,8 +1053,26 @@ class Trainer:
             self.optim_conf.param_group_modifiers,
         )
 
-    def _log_loss_detailed_and_return_core_loss(self, loss, loss_str, step):
+    def _log_loss_detailed_and_return_core_loss(self, loss, loss_str, step, mode=None):
         core_loss = loss.pop(CORE_LOSS_KEY)
+
+        if 'val' in mode:
+            total_loss_dice = loss.pop("metric_dice")
+            total_loss_iou = loss.pop("metric_iou")
+            metric_count = loss.pop("metric_count")
+
+            # logging.info(f"total_loss_dice:{total_loss_dice}")
+            # logging.info(f"total_loss_iou:{total_loss_iou}")
+            # logging.info(f"metric_count:{metric_count}")
+
+            if metric_count.item() > 0:
+                # 计算每个损失项的平均值
+                avg_loss_dice = total_loss_dice / metric_count
+                avg_loss_iou = total_loss_iou / metric_count
+
+                self.metric_dice.append(avg_loss_dice)
+                self.metric_iou.append(avg_loss_iou)
+
         if step % self.logging_conf.log_scalar_frequency == 0:
             for k in loss:
                 log_str = os.path.join(loss_str, k)

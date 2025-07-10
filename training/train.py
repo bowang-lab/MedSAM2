@@ -118,7 +118,7 @@ def add_pythonpath_to_sys_path():
 
 
 def main(args, cfg) -> None:
-    
+
     if cfg.launcher.experiment_log_dir is None:
         cfg.launcher.experiment_log_dir = os.path.join(
             os.getcwd(), "sam2_logs", args.config
@@ -274,13 +274,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
     args.use_cluster = bool(args.use_cluster) if args.use_cluster is not None else None
     register_omegaconf_resolvers()
-    
+
     # Override dataset folder and experiment output path if specified
     cfg = compose(config_name=args.config)
     if args.dataset_path is not None:
         cfg.dataset.folder = args.dataset_path
     if args.output_path is not None:
-        
+
         cfg.launcher.experiment_log_dir = args.output_path
-    
+
     main(args, cfg)

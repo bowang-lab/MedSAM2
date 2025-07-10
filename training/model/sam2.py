@@ -21,6 +21,8 @@ from sam2.utils.misc import concat_points
 
 from training.utils.data_utils import BatchedVideoDatapoint
 
+from sam2.modeling.backbones.boundary_module import BoundaryHead
+
 
 class SAM2Train(SAM2Base):
     def __init__(
@@ -45,7 +47,8 @@ class SAM2Train(SAM2Base):
         # when a frame receives correction clicks under point input if `add_all_frames_to_correct_as_cond=True`
         num_init_cond_frames_for_train=1,  # default: only use the first frame as initial conditioning frame
         num_init_cond_frames_for_eval=1,  # default: only use the first frame as initial conditioning frame
-        rand_init_cond_frames_for_train=True,  # default: random 1~num_init_cond_frames_for_train cond frames (to be constent w/ previous TA data loader)
+        # default: random 1~num_init_cond_frames_for_train cond frames (to be constent w/ previous TA data loader)
+        rand_init_cond_frames_for_train=True,
         rand_init_cond_frames_for_eval=False,
         # if `add_all_frames_to_correct_as_cond` is True, we also append to the conditioning frame list any frame that receives a later correction click
         # if `add_all_frames_to_correct_as_cond` is False, we conditioning frame list to only use those initial conditioning frames
@@ -65,7 +68,7 @@ class SAM2Train(SAM2Base):
         # whether to forward image features per frame (as it's being tracked) during evaluation, instead of forwarding image features
         # of all frames at once. This avoids backbone OOM errors on very long videos in evaluation, but could be slightly slower.
         forward_backbone_per_frame_for_eval=False,
-        freeze_image_encoder=False,
+        freeze_image_encoder=True,
         **kwargs,
     ):
         super().__init__(image_encoder, memory_attention, memory_encoder, **kwargs)
@@ -100,9 +103,22 @@ class SAM2Train(SAM2Base):
         # A random number generator with a fixed initial seed across GPUs
         self.rng = np.random.default_rng(seed=42)
 
+        logging.info(f"freeze_image_encoder status:{freeze_image_encoder}")
         if freeze_image_encoder:
             for p in self.image_encoder.parameters():
                 p.requires_grad = False
+
+        # # Modifications here
+        # boundary_feature_channels = 64
+        # original_fpn_channels = 256
+        # self.boundary_head = BoundaryHead(output_channels=boundary_feature_channels)
+        # # This 1x1 conv will fuse the original features and boundary features
+        # # It takes concatenated features as input and outputs the original channel dimension
+        # self.fusion_conv = torch.nn.Conv2d(
+        #     in_channels=original_fpn_channels + boundary_feature_channels,
+        #     out_channels=original_fpn_channels,
+        #     kernel_size=1,
+        # )
 
     def forward(self, input: BatchedVideoDatapoint):
         if self.training or not self.forward_backbone_per_frame_for_eval:

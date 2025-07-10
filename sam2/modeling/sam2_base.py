@@ -476,6 +476,8 @@ class SAM2Base(torch.nn.Module):
             backbone_out["backbone_fpn"][1] = self.sam_mask_decoder.conv_s1(
                 backbone_out["backbone_fpn"][1]
             )
+
+        # TODO: add image processing feature here after image encoder
         return backbone_out
 
     def _prepare_backbone_features(self, backbone_out):
@@ -484,8 +486,8 @@ class SAM2Base(torch.nn.Module):
         assert len(backbone_out["backbone_fpn"]) == len(backbone_out["vision_pos_enc"])
         assert len(backbone_out["backbone_fpn"]) >= self.num_feature_levels
 
-        feature_maps = backbone_out["backbone_fpn"][-self.num_feature_levels :]
-        vision_pos_embeds = backbone_out["vision_pos_enc"][-self.num_feature_levels :]
+        feature_maps = backbone_out["backbone_fpn"][-self.num_feature_levels:]
+        vision_pos_embeds = backbone_out["vision_pos_enc"][-self.num_feature_levels:]
 
         feat_sizes = [(x.shape[-2], x.shape[-1]) for x in vision_pos_embeds]
         # flatten NxCxHxW to HWxNxC

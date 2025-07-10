@@ -101,7 +101,7 @@ trainer:
           scale: null
           temperature: 10000
         d_model: 256
-        backbone_channel_list: [384,]
+        backbone_channel_list: [384]
         neck_norm: LN
 
     memory_attention:
@@ -138,29 +138,29 @@ trainer:
       num_layers: 4
 
     memory_encoder:
-        _target_: sam2.modeling.memory_encoder.MemoryEncoder
-        out_dim: 64
-        position_encoding:
-          _target_: sam2.modeling.position_encoding.PositionEmbeddingSine
-          num_pos_feats: 64
-          normalize: true
-          scale: null
-          temperature: 10000
-        mask_downsampler:
-          _target_: sam2.modeling.memory_encoder.MaskDownSampler
-          kernel_size: 3
-          stride: 2
-          padding: 1
-        fuser:
-          _target_: sam2.modeling.memory_encoder.Fuser
-          layer:
-            _target_: sam2.modeling.memory_encoder.CXBlock
-            dim: 256
-            kernel_size: 7
-            padding: 3
-            layer_scale_init_value: 1e-6
-            use_dwconv: True  # depth-wise convs
-          num_layers: 2
+      _target_: sam2.modeling.memory_encoder.MemoryEncoder
+      out_dim: 64
+      position_encoding:
+        _target_: sam2.modeling.position_encoding.PositionEmbeddingSine
+        num_pos_feats: 64
+        normalize: true
+        scale: null
+        temperature: 10000
+      mask_downsampler:
+        _target_: sam2.modeling.memory_encoder.MaskDownSampler
+        kernel_size: 3
+        stride: 2
+        padding: 1
+      fuser:
+        _target_: sam2.modeling.memory_encoder.Fuser
+        layer:
+          _target_: sam2.modeling.memory_encoder.CXBlock
+          dim: 256
+          kernel_size: 7
+          padding: 3
+          layer_scale_init_value: 1e-6
+          use_dwconv: True # depth-wise convs
+        num_layers: 2
 
     num_maskmem: 7
     image_size: ${scratch.resolution}
@@ -197,22 +197,21 @@ trainer:
     # box/point input and corrections
     prob_to_use_pt_input_for_train: 0.5
     prob_to_use_pt_input_for_eval: 0.0
-    prob_to_use_box_input_for_train: 0.5  # 0.5*0.5 = 0.25 prob to use box instead of points
+    prob_to_use_box_input_for_train: 0.5 # 0.5*0.5 = 0.25 prob to use box instead of points
     prob_to_use_box_input_for_eval: 0.0
-    prob_to_sample_from_gt_for_train: 0.1  # with a small prob, sampling correction points from GT mask instead of prediction errors
-    num_frames_to_correct_for_train: 2  # iteratively sample on random 1~2 frames (always include the first frame)
-    num_frames_to_correct_for_eval: 1  # only iteratively sample on first frame
-    rand_frames_to_correct_for_train: True  # random #init-cond-frame ~ 2
-    add_all_frames_to_correct_as_cond: True  # when a frame receives a correction click, it becomes a conditioning frame (even if it's not initially a conditioning frame)
+    prob_to_sample_from_gt_for_train: 0.1 # with a small prob, sampling correction points from GT mask instead of prediction errors
+    num_frames_to_correct_for_train: 2 # iteratively sample on random 1~2 frames (always include the first frame)
+    num_frames_to_correct_for_eval: 1 # only iteratively sample on first frame
+    rand_frames_to_correct_for_train: True # random #init-cond-frame ~ 2
+    add_all_frames_to_correct_as_cond: True # when a frame receives a correction click, it becomes a conditioning frame (even if it's not initially a conditioning frame)
     # maximum 2 initial conditioning frames
     num_init_cond_frames_for_train: 2
-    rand_init_cond_frames_for_train: True  # random 1~2
+    rand_init_cond_frames_for_train: True # random 1~2
     num_correction_pt_per_frame: 7
     use_act_ckpt_iterative_pt_sampling: false
-    
-    num_init_cond_frames_for_eval: 1  # only mask on the first frame
+
+    num_init_cond_frames_for_eval: 1 # only mask on the first frame
     forward_backbone_per_frame_for_eval: True
-    
 
   data:
     train:
@@ -226,21 +225,18 @@ trainer:
           dataset:
             _target_: training.dataset.utils.ConcatDataset
             datasets:
-            # CT
-            - _target_: training.dataset.vos_dataset.VOSDataset
-              transforms: ${vos.train_transforms}
-              training: true
-              video_dataset:
-                _target_: training.dataset.vos_raw_dataset.NPZRawDataset
-                folder: /home/jma/Documents/MedSAM2/data/RECIST_train_npz
-              sampler:
-                _target_: training.dataset.vos_sampler.RandomUniformSampler
-                num_frames: ${scratch.num_frames}
-                max_num_objects: ${scratch.max_num_objects}
-              multiplier: 1
-            
-
-
+              # CT
+              - _target_: training.dataset.vos_dataset.VOSDataset
+                transforms: ${vos.train_transforms}
+                training: true
+                video_dataset:
+                  _target_: training.dataset.vos_raw_dataset.NPZRawDataset
+                  folder: /home/lthpc/Next/MedSAM2/data/RECIST_train_npz
+                sampler:
+                  _target_: training.dataset.vos_sampler.RandomUniformSampler
+                  num_frames: ${scratch.num_frames}
+                  max_num_objects: ${scratch.max_num_objects}
+                multiplier: 1
 
       shuffle: True
       num_workers: ${scratch.num_train_workers}
@@ -268,9 +264,9 @@ trainer:
       - _target_: training.optimizer.layer_decay_param_modifier
         _partial_: True
         layer_decay_value: 0.9
-        apply_to: 'image_encoder.trunk'
+        apply_to: "image_encoder.trunk"
         overrides:
-          - pattern: '*pos_embed*'
+          - pattern: "*pos_embed*"
             value: 1.0
 
     options:
@@ -284,7 +280,7 @@ trainer:
             start_value: ${scratch.vision_lr}
             end_value: ${divide:${scratch.vision_lr},10}
           param_names:
-            - 'image_encoder.*'
+            - "image_encoder.*"
       weight_decay:
         - scheduler:
             _target_: fvcore.common.param_scheduler.ConstantParamScheduler
@@ -293,8 +289,8 @@ trainer:
             _target_: fvcore.common.param_scheduler.ConstantParamScheduler
             value: 0.0
           param_names:
-            - '*bias*'
-          module_cls_names: ['torch.nn.LayerNorm']
+            - "*bias*"
+          module_cls_names: ["torch.nn.LayerNorm"]
 
   loss:
     all:
@@ -317,7 +313,7 @@ trainer:
   logging:
     tensorboard_writer:
       _target_: training.utils.logger.make_tensorboard_logger
-      log_dir:  ${launcher.experiment_log_dir}/tensorboard
+      log_dir: ${launcher.experiment_log_dir}/tensorboard
       flush_secs: 120
       should_log: True
     log_dir: ${launcher.experiment_log_dir}/logs
@@ -337,7 +333,7 @@ trainer:
       state_dict:
         _target_: training.utils.checkpoint_utils.load_checkpoint_and_apply_kernels
         checkpoint_path: checkpoints/efficienttam_s_512x512.pt
-        ckpt_state_dict_keys: ['model']
+        ckpt_state_dict_keys: ["model"]
 
 launcher:
   num_nodes: 1
@@ -354,4 +350,3 @@ submitit:
   timeout_hour: 24
   name: null
   port_range: [10000, 65000]
-

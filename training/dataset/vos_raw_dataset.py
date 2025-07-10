@@ -111,11 +111,14 @@ class PNGRawDataset(VOSRawDataset):
                 video_names_mult.extend([video_name] * num_frames)
             self.video_names = video_names_mult
 
+        # logging.info(f"video_names:{self.video_names}")
+
     def get_video(self, idx):
         """
         Given a VOSVideo object, return the mask tensors.
         """
         video_name = self.video_names[idx]
+        # print(f"video_name in this idx:{video_name}")
 
         if self.single_object_mode:
             video_frame_root = os.path.join(
@@ -133,18 +136,19 @@ class PNGRawDataset(VOSRawDataset):
                 video_mask_root, self.single_object_mode
             )
 
-        all_frames = sorted(glob.glob(os.path.join(video_frame_root, "*.jpg")))
+        all_frames = sorted(glob.glob(os.path.join(video_frame_root, "*.png")))
         if self.truncate_video > 0:
             all_frames = all_frames[: self.truncate_video]
         frames = []
         for idx, fpath in enumerate(all_frames[::self.sample_rate]):
-            fid = idx # int(os.path.basename(fpath).split(".")[0])
+            fid = idx  # int(os.path.basename(fpath).split(".")[0])
             frames.append(VOSFrame(fid, image_path=fpath))
         video = VOSVideo(video_name, idx, frames)
         return video, segment_loader
 
     def __len__(self):
         return len(self.video_names)
+
 
 class NPZRawDataset(VOSRawDataset):
     def __init__(
@@ -192,36 +196,37 @@ class NPZRawDataset(VOSRawDataset):
         """
         video_name = self.video_names[idx]
         npz_path = os.path.join(self.folder, f"{video_name}.npz")
-        
+
         # Load NPZ file
         npz_data = np.load(npz_path)
-        
+
         # Extract frames and masks
         frames = npz_data['imgs'] / 255.0
         # Expand the grayscale images to three channels
         frames = np.repeat(frames[:, np.newaxis, :, :], 3, axis=1)  # (img_num, 3, H, W)
         masks = npz_data['gts']
-        
+
         if self.truncate_video > 0:
             frames = frames[:self.truncate_video]
             masks = masks[:self.truncate_video]
-        
+
         # Create VOSFrame objects
         vos_frames = []
         for i, frame in enumerate(frames[::self.sample_rate]):
             frame_idx = i * self.sample_rate
             vos_frames.append(VOSFrame(frame_idx, image_path=None, data=torch.from_numpy(frame)))
-        
+
         # Create VOSVideo object
         video = VOSVideo(video_name, idx, vos_frames)
-        
+
         # Create NPZSegmentLoader
         segment_loader = NPZSegmentLoader(masks[::self.sample_rate])
-        
+
         return video, segment_loader
 
     def __len__(self):
         return len(self.video_names)
+
 
 class SA1BRawDataset(VOSRawDataset):
     def __init__(

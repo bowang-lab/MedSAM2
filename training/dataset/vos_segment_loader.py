@@ -111,10 +111,10 @@ class PalettisedPNGSegmentLoader:
         # build a mapping from frame id to their PNG mask path
         # note that in some datasets, the PNG paths could have more
         # than 5 digits, e.g. "00000000.png" instead of "00000.png"
-        png_filenames = sorted(glob.glob(os.path.join(self.video_png_root, "*.png"))) # os.listdir(self.video_png_root)
+        png_filenames = sorted(glob.glob(os.path.join(self.video_png_root, "*.png")))  # os.listdir(self.video_png_root)
         self.frame_id_to_png_filename = {}
         for idx, filename in enumerate(png_filenames[::self.sample_rate]):
-            frame_id = idx # int(os.path.basename(filename).split(".")[0])
+            frame_id = idx  # int(os.path.basename(filename).split(".")[0])
             self.frame_id_to_png_filename[frame_id] = filename
 
     def load(self, frame_id):
@@ -305,7 +305,7 @@ class NPZSegmentLoader:
     def __init__(self, masks):
         """
         Initialize the NPZSegmentLoader.
-        
+
         Args:
             masks (numpy.ndarray): Array of masks with shape (img_num, H, W).
         """
