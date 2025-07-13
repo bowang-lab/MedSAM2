@@ -16,6 +16,51 @@ import logging
 from training.trainer import CORE_LOSS_KEY
 
 from training.utils.distributed import get_world_size, is_dist_avail_and_initialized
+from training.utils.boundary_utils import get_boundary_from_masks, save_boundary_visualization, save_boundary_visualization_simple
+
+
+def boundary_loss(
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    num_objects: float,
+    bce_weight: float = 1,
+    dice_weight: float = 0.5
+) -> torch.Tensor:
+    """
+    Computes a composite loss for boundary prediction, combining BCE and Dice loss.
+
+    Args:
+        inputs (torch.Tensor): The model's raw logits for boundary prediction.
+                               Shape: (B, C, H, W).
+        targets (torch.Tensor): The ground truth boundary masks.
+                                Shape: (B, C, H, W).
+        num_objects (float): The total number of objects to normalize the loss.
+        bce_weight (float): The weight for the BCE loss component.
+        dice_weight (float): The weight for the Dice loss component.
+
+    Returns:
+        torch.Tensor: A scalar tensor representing the combined boundary loss.
+    """
+    # 1. Binary Cross-Entropy Loss
+    # BCEWithLogitsLoss is numerically more stable than manual sigmoid + BCE.
+    # It handles its own normalization internally, so we just take the mean.
+    bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='mean')
+
+    # 2. Dice Loss
+    # We can reuse the existing dice_loss function. Since boundary prediction is a
+    # single-mask problem per image, we set loss_on_multimask=False.
+    # The existing dice_loss already handles normalization by num_objects.
+    # d_loss = dice_loss(inputs, targets, num_objects, loss_on_multimask=False)
+
+    # 3. Combine the losses
+    # Note: We need to be careful with double normalization. bce_loss is a mean over all
+    # pixels, while dice_loss is normalized by num_objects. For consistency, let's
+    # stick to the normalization scheme of the existing functions.
+    # The BCE loss here is an average per-pixel loss. Multiplying by a weight should be fine.
+
+    combined_loss = bce_weight * bce_loss
+
+    return combined_loss
 
 
 def dice_loss(inputs, targets, num_objects, loss_on_multimask=False):
@@ -530,4 +575,352 @@ class MultiStepMultiMasksAndIous4Val(nn.Module):
             if weight != 0:
                 reduced_loss += losses[loss_key] * weight
 
+        return reduced_loss
+
+
+class MultiStepMultiMasksAndIousFull(nn.Module):
+    def __init__(
+        self,
+        weight_dict,
+        focal_alpha=0.25,
+        focal_gamma=2,
+        supervise_all_iou=False,
+        iou_use_l1_loss=False,
+        pred_obj_scores=False,
+        focal_gamma_obj_score=0.0,
+        focal_alpha_obj_score=-1,
+    ):
+        """
+        This class computes the multi-step multi-mask and IoU losses.
+        Args:
+            weight_dict: dict containing weights for focal, dice, iou losses
+            focal_alpha: alpha for sigmoid focal loss
+            focal_gamma: gamma for sigmoid focal loss
+            supervise_all_iou: if True, back-prop iou losses for all predicted masks
+            iou_use_l1_loss: use L1 loss instead of MSE loss for iou
+            pred_obj_scores: if True, compute loss for object scores
+            focal_gamma_obj_score: gamma for sigmoid focal loss on object scores
+            focal_alpha_obj_score: alpha for sigmoid focal loss on object scores
+        """
+
+        super().__init__()
+        self.weight_dict = weight_dict
+        self.focal_alpha = focal_alpha
+        self.focal_gamma = focal_gamma
+        assert "loss_mask" in self.weight_dict
+        assert "loss_dice" in self.weight_dict
+        assert "loss_iou" in self.weight_dict
+        if "loss_class" not in self.weight_dict:
+            self.weight_dict["loss_class"] = 0.0
+
+        self.focal_alpha_obj_score = focal_alpha_obj_score
+        self.focal_gamma_obj_score = focal_gamma_obj_score
+        self.supervise_all_iou = supervise_all_iou
+        self.iou_use_l1_loss = iou_use_l1_loss
+        self.pred_obj_scores = pred_obj_scores
+
+        # --- NEW: Store boundary loss weights ---
+        boundary_bce_weight = 1
+        boundary_dice_weight = 1
+        self.boundary_bce_weight = boundary_bce_weight
+        self.boundary_dice_weight = boundary_dice_weight
+
+        # Ensure loss_boundary weight is set if not present, to avoid errors
+        if "loss_boundary" not in self.weight_dict:
+            self.weight_dict["loss_boundary"] = 0.0
+
+        self.viz_counter = 0
+
+    def forward(self, outs_batch: List[Dict], targets_batch: torch.Tensor):
+        assert len(outs_batch) == len(targets_batch)
+        num_objects = torch.tensor(
+            (targets_batch.shape[1]), device=targets_batch.device, dtype=torch.float
+        )  # Number of objects is fixed within a batch
+        if is_dist_avail_and_initialized():
+            torch.distributed.all_reduce(num_objects)
+        num_objects = torch.clamp(num_objects / get_world_size(), min=1).item()
+
+        losses = defaultdict(int)
+
+        # calculate full boundary loss here
+        # --- Single-step Boundary Loss Calculation (NEW) ---
+        # This part handles the one-shot prediction from the encoder's boundary head.
+        # It is calculated once per sample, outside the multi-step loop.
+        # Check if boundary loss is enabled and predictions are available in backbone_out
+        if self.weight_dict["loss_boundary"] > 0:
+            print(f"type:{type(outs_batch)}, len:{len(outs_batch)}")
+            # exit(0)
+
+            pred_boundaries = outs_batch[0]["boundary_logits"]  # Shape (B_flat, 1, H_pred, W_pred)
+
+            # targets_batch has shape (B_videos, N_frames, H, W). We need to flatten it.
+            # Reshape it to (B_videos * N_frames, 1, H, W) to match predictions
+            flat_targets = targets_batch.flatten(0, 1).unsqueeze(1).float()
+
+            # gt_boundaries = get_boundary_from_masks(flat_targets)
+            num_frames_pred = pred_boundaries.shape[0]
+            num_frames_gt = flat_targets.shape[0]
+
+            if num_frames_pred != num_frames_gt:
+                # This handles cases like 64 vs 72
+                min_frames = min(num_frames_pred, num_frames_gt)
+                pred_boundaries = pred_boundaries[:min_frames]
+                flat_targets = flat_targets[:min_frames]
+                # Log a warning to notify the user about the mismatch
+                if torch.distributed.get_rank() == 0:  # Only log on the main process
+                    print(f"Warning: Mismatch in frame count for boundary loss. "
+                          f"Preds: {num_frames_pred}, GTs: {num_frames_gt}. "
+                          f"Using {min_frames} frames for calculation.")
+
+            # Now pred_boundaries and flat_targets have the same batch size
+            gt_boundaries = get_boundary_from_masks(flat_targets)
+
+            # Upsample predictions if needed
+            if pred_boundaries.shape[-2:] != gt_boundaries.shape[-2:]:
+                pred_boundaries = F.interpolate(
+                    pred_boundaries,
+                    size=gt_boundaries.shape[-2:],
+                    mode="bilinear", align_corners=False
+                )
+
+            # Call the boundary_loss function
+            loss_b = boundary_loss(
+                pred_boundaries, gt_boundaries, num_objects,
+                bce_weight=self.boundary_bce_weight,
+                dice_weight=self.boundary_dice_weight
+            )
+            losses["loss_boundary"] += loss_b
+
+            # # Upsample predictions if needed
+            # # It's important to visualize the upsampled predictions to match GT size
+            # if pred_boundaries.shape[-2:] != gt_boundaries.shape[-2:]:
+            #     pred_boundaries_upsampled = F.interpolate(
+            #         pred_boundaries,
+            #         size=gt_boundaries.shape[-2:],
+            #         mode="bilinear", align_corners=False
+            #     )
+            # else:
+            #     pred_boundaries_upsampled = pred_boundaries
+            # self.viz_counter += 1
+            # save_boundary_visualization_simple(
+            #     pred_logits=pred_boundaries_upsampled.clone(),  # Visualize the same upsampled logits
+            #     gt_boundaries=gt_boundaries.clone(),
+            #     save_path="/home/lthpc/Next/MedSAM2/visualization_output",
+            #     prefix="train_boundary_only_viz",
+            #     batch_idx=self.viz_counter
+            # )
+            # logging.info(f"saved to ouput file")
+
+        # now for the loss calculation per frame
+        for outs, targets in zip(outs_batch, targets_batch):
+            cur_losses = self._forward(outs, targets, num_objects, loss_boundary=loss_b)
+            for k, v in cur_losses.items():
+                # if k == "loss_boundary":    # single instant calculation for boundary here
+                #     continue
+                losses[k] += v
+
+        return losses
+
+    def _forward(self, outputs: Dict, targets: torch.Tensor, num_objects, loss_boundary=0):
+        """
+        Compute the losses related to the masks: the focal loss and the dice loss.
+        and also the MAE or MSE loss between predicted IoUs and actual IoUs.
+
+        Here "multistep_pred_multimasks_high_res" is a list of multimasks (tensors
+        of shape [N, M, H, W], where M could be 1 or larger, corresponding to
+        one or multiple predicted masks from a click.
+
+        We back-propagate focal, dice losses only on the prediction channel
+        with the lowest focal+dice loss between predicted mask and ground-truth.
+        If `supervise_all_iou` is True, we backpropagate ious losses for all predicted masks.
+        """
+
+        target_masks = targets.unsqueeze(1).float()
+        assert target_masks.dim() == 4  # [N, 1, H, W]
+        src_masks_list = outputs["multistep_pred_multimasks_high_res"]
+        ious_list = outputs["multistep_pred_ious"]
+        object_score_logits_list = outputs["multistep_object_score_logits"]
+
+        assert len(src_masks_list) == len(ious_list)
+        assert len(object_score_logits_list) == len(ious_list)
+
+        # accumulate the loss over prediction steps
+        losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0, "loss_boundary": loss_boundary}
+        for src_masks, ious, object_score_logits in zip(
+            src_masks_list, ious_list, object_score_logits_list
+        ):
+            self._update_losses(
+                losses, src_masks, target_masks, ious, num_objects, object_score_logits
+            )
+
+        losses[CORE_LOSS_KEY] = self.reduce_loss(losses)
+        return losses
+
+    def _update_losses(
+        self, losses, src_masks, target_masks, ious, num_objects, object_score_logits
+    ):
+        target_masks = target_masks.expand_as(src_masks)
+        # get focal, dice and iou loss on all output masks in a prediction step
+        loss_multimask = sigmoid_focal_loss(
+            src_masks,
+            target_masks,
+            num_objects,
+            alpha=self.focal_alpha,
+            gamma=self.focal_gamma,
+            loss_on_multimask=True,
+        )
+        loss_multidice = dice_loss(
+            src_masks, target_masks, num_objects, loss_on_multimask=True
+        )
+        if not self.pred_obj_scores:
+            loss_class = torch.tensor(
+                0.0, dtype=loss_multimask.dtype, device=loss_multimask.device
+            )
+            target_obj = torch.ones(
+                loss_multimask.shape[0],
+                1,
+                dtype=loss_multimask.dtype,
+                device=loss_multimask.device,
+            )
+        else:
+            target_obj = torch.any((target_masks[:, 0] > 0).flatten(1), dim=-1)[
+                ..., None
+            ].float()
+            loss_class = sigmoid_focal_loss(
+                object_score_logits,
+                target_obj,
+                num_objects,
+                alpha=self.focal_alpha_obj_score,
+                gamma=self.focal_gamma_obj_score,
+            )
+
+        loss_multiiou = iou_loss(
+            src_masks,
+            target_masks,
+            ious,
+            num_objects,
+            loss_on_multimask=True,
+            use_l1_loss=self.iou_use_l1_loss,
+        )
+
+        # # --- NEW: Decoder-level Boundary Loss Calculation ---
+        # # Calculate boundary loss between each predicted mask and the ground truth boundary
+        # loss_multiboundary = torch.tensor(0.0, device=src_masks.device)
+        # if self.weight_dict.get("loss_boundary_decoder", 0.0) > 0:
+        #     gt_boundaries = get_boundary_from_masks(target_masks.float())
+        #     # This loss compares the decoder's mask prediction logits against the GT boundary
+        #     # It encourages the logits to form a sharp boundary matching the GT.
+        #     loss_multiboundary = boundary_loss(
+        #         src_masks,
+        #         gt_boundaries,
+        #         num_objects,
+        #         bce_weight=0.5,
+        #         dice_weight=0.5
+        #     )
+        # # --- END NEW ---
+
+        assert loss_multimask.dim() == 2
+        assert loss_multidice.dim() == 2
+        assert loss_multiiou.dim() == 2
+        if loss_multimask.size(1) > 1:
+            # take the mask indices with the smallest focal + dice loss for back propagation
+            loss_combo = (
+                loss_multimask * self.weight_dict["loss_mask"]
+                + loss_multidice * self.weight_dict["loss_dice"]
+            )
+            best_loss_inds = torch.argmin(loss_combo, dim=-1)
+            batch_inds = torch.arange(loss_combo.size(0), device=loss_combo.device)
+            loss_mask = loss_multimask[batch_inds, best_loss_inds].unsqueeze(1)
+            loss_dice = loss_multidice[batch_inds, best_loss_inds].unsqueeze(1)
+            # calculate the iou prediction and slot losses only in the index
+            # with the minimum loss for each mask (to be consistent w/ SAM)
+            if self.supervise_all_iou:
+                loss_iou = loss_multiiou.mean(dim=-1).unsqueeze(1)
+            else:
+                loss_iou = loss_multiiou[batch_inds, best_loss_inds].unsqueeze(1)
+
+                # loss_boundary_decoder = loss_multiboundary[batch_inds, best_loss_inds].unsqueeze(1)
+
+                best_pred_logits = src_masks[batch_inds, best_loss_inds]  # Shape: [N, H, W]
+        else:
+            loss_mask = loss_multimask
+            loss_dice = loss_multidice
+            loss_iou = loss_multiiou
+
+            best_pred_logits = src_masks.squeeze(1)  # Shape: [N, H, W]
+
+        # backprop focal, dice and iou loss only if obj present
+        loss_mask = loss_mask * target_obj
+        loss_dice = loss_dice * target_obj
+        loss_iou = loss_iou * target_obj
+
+        # loss_boundary_decoder = loss_boundary_decoder * target_obj
+
+        # sum over batch dimension (note that the losses are already divided by num_objects)
+        losses["loss_mask"] += loss_mask.sum()
+        losses["loss_dice"] += loss_dice.sum()
+        losses["loss_iou"] += loss_iou.sum()
+        losses["loss_class"] += loss_class
+        # losses["loss_boundary_decoder"] += loss_boundary_decoder.sum()
+
+        # backprop focal, dice and iou loss only if obj present
+        loss_mask = loss_mask * target_obj
+        loss_dice = loss_dice * target_obj
+        loss_iou = loss_iou * target_obj
+
+        # sum over batch dimension (note that the losses are already divided by num_objects)
+        losses["loss_mask"] += loss_mask.sum()
+        losses["loss_dice"] += loss_dice.sum()
+        losses["loss_iou"] += loss_iou.sum()
+        losses["loss_class"] += loss_class
+
+        # ==================== 新增：简洁的指标计算部分 ====================
+        if not self.training:
+            with torch.no_grad():
+                gt_masks = target_masks[:, 0, :, :]
+                best_pred_binary = (best_pred_logits.sigmoid() > 0.5).float()
+
+                pred_flat = best_pred_binary.flatten(1)
+                gt_flat = gt_masks.flatten(1)
+
+                epsilon = 1e-6
+
+                intersection = (pred_flat * gt_flat).sum(1)
+                pred_sum = pred_flat.sum(1)
+                gt_sum = gt_flat.sum(1)
+
+                # 每个样本的 Dice 和 IoU 分数
+                dice_score = (2. * intersection + epsilon) / (pred_sum + gt_sum + epsilon)
+                iou_score = (intersection + epsilon) / (pred_sum + gt_sum - intersection + epsilon)
+
+                # 1. 计算批次内有效物体的数量
+                num_valid_objects = target_obj.sum()
+
+                # 只有在有物体的情况下才进行累加，避免 num_valid_objects=0 时产生NaN
+                if num_valid_objects > 0:
+                    # 2. 计算有效样本的指标总和
+                    sum_dice = (dice_score * target_obj.squeeze(-1)).sum()
+                    sum_iou = (iou_score * target_obj.squeeze(-1)).sum()
+
+                    # 3. 累加总和与计数
+                    losses["metric_dice"] = losses.get("metric_dice", 0.0) + sum_dice
+                    losses["metric_iou"] = losses.get("metric_iou", 0.0) + sum_iou
+                    losses["metric_count"] = losses.get("metric_count", 0.0) + num_valid_objects
+
+                    avg_dice_this_batch = (dice_score * target_obj.squeeze(-1)).sum() / num_valid_objects
+                    avg_iou_this_batch = (iou_score * target_obj.squeeze(-1)).sum() / num_valid_objects
+
+                    # logging.info(f"avg_dice_this_batch:{avg_dice_this_batch}, avg_iou_this_batch:{avg_iou_this_batch}")
+
+    def reduce_loss(self, losses):
+        reduced_loss = 0.0
+        for loss_key, weight in self.weight_dict.items():
+            if loss_key not in losses:
+                raise ValueError(f"{type(self)} doesn't compute {loss_key}")
+            if weight != 0:
+                # print(f"now add for:{loss_key}, weight:{weight}, value:{losses[loss_key]}, final_value:{weight*losses[loss_key]}")
+                reduced_loss += losses[loss_key] * weight
+
+        # print(f"reduced_loss: {reduced_loss}")
+        # exit(0)
         return reduced_loss

@@ -1,11 +1,11 @@
 # @package _global_
 
 scratch:
-  resolution: 384
-  train_video_batch_size: 4
+  resolution: 512
+  train_video_batch_size: 8
   num_train_workers: 15
   num_frames: 8
-  max_num_objects: 5
+  max_num_objects: 3
   base_lr: 5.0e-5
   vision_lr: 3.0e-05
   phases_per_epoch: 1
@@ -142,6 +142,11 @@ trainer:
           use_dwconv: True # depth-wise convs
         num_layers: 2
 
+    boundary_head:
+      _target_: sam2.modeling.boundary_module.BoundaryHead
+      fpn_in_channels: 32
+      boundary_out_channels: 256
+
     num_maskmem: 7
     image_size: ${scratch.resolution}
     # apply scaled sigmoid on mask logits for memory encoder, and directly feed input mask as output mask
@@ -198,6 +203,29 @@ trainer:
     forward_backbone_per_frame_for_eval: True
 
   data:
+    # train:
+    #   _target_: training.dataset.sam2_datasets.TorchTrainMixedDataset
+    #   phases_per_epoch: ${scratch.phases_per_epoch}
+    #   batch_sizes:
+    #     - ${scratch.train_video_batch_size}
+    #   datasets:
+    #     - _target_: training.dataset.utils.RepeatFactorWrapper
+    #       dataset:
+    #         _target_: training.dataset.utils.ConcatDataset
+    #         datasets:
+    #           # PNG
+    #           - _target_: training.dataset.vos_dataset.VOSDataset
+    #             transforms: ${vos.train_transforms}
+    #             training: true
+    #             video_dataset:
+    #               _target_: training.dataset.vos_raw_dataset.PNGRawDataset
+    #               img_folder: /home/lthpc/Datasets/Task02_Heart_png_sift_test/Training/image
+    #               gt_folder: /home/lthpc/Datasets/Task02_Heart_png_sift_test/Training/mask
+    #             sampler:
+    #               _target_: training.dataset.vos_sampler.RandomUniformSampler
+    #               num_frames: ${scratch.num_frames}
+    #               max_num_objects: ${scratch.max_num_objects}
+    #             multiplier: 1
     train:
       _target_: training.dataset.sam2_datasets.TorchTrainMixedDataset
       phases_per_epoch: ${scratch.phases_per_epoch}
@@ -208,79 +236,78 @@ trainer:
           dataset:
             _target_: training.dataset.utils.ConcatDataset
             datasets:
-              # PNG
+              # CT Lesion npz dataset
               - _target_: training.dataset.vos_dataset.VOSDataset
                 transforms: ${vos.train_transforms}
                 training: true
                 video_dataset:
-                  _target_: training.dataset.vos_raw_dataset.PNGRawDataset
-                  img_folder: /home/lthpc/Datasets/Task02_Heart_png_sift_test/Training/image
-                  gt_folder: /home/lthpc/Datasets/Task02_Heart_png_sift_test/Training/mask
+                  _target_: training.dataset.vos_raw_dataset.NPZRawDataset
+                  folder: /home/lthpc/Datasets/FLARE-Task1-PancancerRECIST-to-3D/processed/train # must be absolute path
                 sampler:
                   _target_: training.dataset.vos_sampler.RandomUniformSampler
                   num_frames: ${scratch.num_frames}
                   max_num_objects: ${scratch.max_num_objects}
                 multiplier: 1
-              # # CT
-              # - _target_: training.dataset.vos_dataset.VOSDataset
-              #   transforms: ${vos.train_transforms}
-              #   training: false
-              #   video_dataset:
-              #     _target_: training.dataset.vos_raw_dataset.NPZRawDataset
-              #     folder: CVPR25/3D_train_npz_random_10percent_16G/CT
-              #   sampler:
-              #     _target_: training.dataset.vos_sampler.RandomUniformSampler
-              #     num_frames: ${scratch.num_frames}
-              #     max_num_objects: ${scratch.max_num_objects}
-              #   multiplier: 1
-              # # MR
-              # - _target_: training.dataset.vos_dataset.VOSDataset
-              #   transforms: ${vos.train_transforms}
-              #   training: false
-              #   video_dataset:
-              #     _target_: training.dataset.vos_raw_dataset.NPZRawDataset
-              #     folder: CVPR25/3D_train_npz_random_10percent_16G/MR
-              #   sampler:
-              #     _target_: training.dataset.vos_sampler.RandomUniformSampler
-              #     num_frames: ${scratch.num_frames}
-              #     max_num_objects: ${scratch.max_num_objects}
-              #   multiplier: 1
-              # # PET
-              # - _target_: training.dataset.vos_dataset.VOSDataset
-              #   transforms: ${vos.train_transforms}
-              #   training: false
-              #   video_dataset:
-              #     _target_: training.dataset.vos_raw_dataset.NPZRawDataset
-              #     folder: CVPR25/3D_train_npz_random_10percent_16G/PET
-              #   sampler:
-              #     _target_: training.dataset.vos_sampler.RandomUniformSampler
-              #     num_frames: ${scratch.num_frames}
-              #     max_num_objects: ${scratch.max_num_objects}
-              #   multiplier: 10
-              # # Ultrasound 3D
-              # - _target_: training.dataset.vos_dataset.VOSDataset
-              #   transforms: ${vos.train_transforms}
-              #   training: false
-              #   video_dataset:
-              #     _target_: training.dataset.vos_raw_dataset.NPZRawDataset
-              #     folder: CVPR25/3D_train_npz_random_10percent_16G/US3D
-              #   sampler:
-              #     _target_: training.dataset.vos_sampler.RandomUniformSampler
-              #     num_frames: ${scratch.num_frames}
-              #     max_num_objects: ${scratch.max_num_objects}
-              #   multiplier: 1
-              # # Microscopy 3D
-              # - _target_: training.dataset.vos_dataset.VOSDataset
-              #   transforms: ${vos.train_transforms}
-              #   training: false
-              #   video_dataset:
-              #     _target_: training.dataset.vos_raw_dataset.NPZRawDataset
-              #     folder: CVPR25/3D_train_npz_random_10percent_16G/Microscopy
-              #   sampler:
-              #     _target_: training.dataset.vos_sampler.RandomUniformSampler
-              #     num_frames: ${scratch.num_frames}
-              #     max_num_objects: ${scratch.max_num_objects}
-              #   multiplier: 1
+      # # CT
+      # - _target_: training.dataset.vos_dataset.VOSDataset
+      #   transforms: ${vos.train_transforms}
+      #   training: false
+      #   video_dataset:
+      #     _target_: training.dataset.vos_raw_dataset.NPZRawDataset
+      #     folder: CVPR25/3D_train_npz_random_10percent_16G/CT
+      #   sampler:
+      #     _target_: training.dataset.vos_sampler.RandomUniformSampler
+      #     num_frames: ${scratch.num_frames}
+      #     max_num_objects: ${scratch.max_num_objects}
+      #   multiplier: 1
+      # # MR
+      # - _target_: training.dataset.vos_dataset.VOSDataset
+      #   transforms: ${vos.train_transforms}
+      #   training: false
+      #   video_dataset:
+      #     _target_: training.dataset.vos_raw_dataset.NPZRawDataset
+      #     folder: CVPR25/3D_train_npz_random_10percent_16G/MR
+      #   sampler:
+      #     _target_: training.dataset.vos_sampler.RandomUniformSampler
+      #     num_frames: ${scratch.num_frames}
+      #     max_num_objects: ${scratch.max_num_objects}
+      #   multiplier: 1
+      # # PET
+      # - _target_: training.dataset.vos_dataset.VOSDataset
+      #   transforms: ${vos.train_transforms}
+      #   training: false
+      #   video_dataset:
+      #     _target_: training.dataset.vos_raw_dataset.NPZRawDataset
+      #     folder: CVPR25/3D_train_npz_random_10percent_16G/PET
+      #   sampler:
+      #     _target_: training.dataset.vos_sampler.RandomUniformSampler
+      #     num_frames: ${scratch.num_frames}
+      #     max_num_objects: ${scratch.max_num_objects}
+      #   multiplier: 10
+      # # Ultrasound 3D
+      # - _target_: training.dataset.vos_dataset.VOSDataset
+      #   transforms: ${vos.train_transforms}
+      #   training: false
+      #   video_dataset:
+      #     _target_: training.dataset.vos_raw_dataset.NPZRawDataset
+      #     folder: CVPR25/3D_train_npz_random_10percent_16G/US3D
+      #   sampler:
+      #     _target_: training.dataset.vos_sampler.RandomUniformSampler
+      #     num_frames: ${scratch.num_frames}
+      #     max_num_objects: ${scratch.max_num_objects}
+      #   multiplier: 1
+      # # Microscopy 3D
+      # - _target_: training.dataset.vos_dataset.VOSDataset
+      #   transforms: ${vos.train_transforms}
+      #   training: false
+      #   video_dataset:
+      #     _target_: training.dataset.vos_raw_dataset.NPZRawDataset
+      #     folder: CVPR25/3D_train_npz_random_10percent_16G/Microscopy
+      #   sampler:
+      #     _target_: training.dataset.vos_sampler.RandomUniformSampler
+      #     num_frames: ${scratch.num_frames}
+      #     max_num_objects: ${scratch.max_num_objects}
+      #   multiplier: 1
       shuffle: True
       num_workers: ${scratch.num_train_workers}
       pin_memory: True
@@ -288,26 +315,25 @@ trainer:
       collate_fn:
         _target_: training.utils.data_utils.collate_fn
         _partial_: true
-        dict_key: all
+        dict_key: all_new
 
     val:
       _target_: training.dataset.sam2_datasets.TorchTrainMixedDataset
       phases_per_epoch: ${scratch.phases_per_epoch}
       batch_sizes:
-        - ${scratch.train_video_batch_size}
+        - 1
       datasets:
         - _target_: training.dataset.utils.RepeatFactorWrapper
           dataset:
             _target_: training.dataset.utils.ConcatDataset
             datasets:
-              # PNG
+              # CT Lesion npz dataset
               - _target_: training.dataset.vos_dataset.VOSDataset
                 transforms: ${vos.train_transforms}
                 training: true
                 video_dataset:
-                  _target_: training.dataset.vos_raw_dataset.PNGRawDataset
-                  img_folder: /home/lthpc/Datasets/Task02_Heart_png_sift_test/Test/image
-                  gt_folder: /home/lthpc/Datasets/Task02_Heart_png_sift_test/Test/mask
+                  _target_: training.dataset.vos_raw_dataset.NPZRawDataset
+                  folder: /home/lthpc/Datasets/FLARE-Task1-PancancerRECIST-to-3D/processed/val # must be absolute path
                 sampler:
                   _target_: training.dataset.vos_sampler.RandomUniformSampler
                   num_frames: ${scratch.num_frames}
@@ -321,6 +347,38 @@ trainer:
         _target_: training.utils.data_utils.collate_fn
         _partial_: true
         dict_key: all_val
+
+    # val:
+    #   _target_: training.dataset.sam2_datasets.TorchTrainMixedDataset
+    #   phases_per_epoch: ${scratch.phases_per_epoch}
+    #   batch_sizes:
+    #     - ${scratch.train_video_batch_size}
+    #   datasets:
+    #     - _target_: training.dataset.utils.RepeatFactorWrapper
+    #       dataset:
+    #         _target_: training.dataset.utils.ConcatDataset
+    #         datasets:
+    #           # PNG
+    #           - _target_: training.dataset.vos_dataset.VOSDataset
+    #             transforms: ${vos.train_transforms}
+    #             training: true
+    #             video_dataset:
+    #               _target_: training.dataset.vos_raw_dataset.PNGRawDataset
+    #               img_folder: /home/lthpc/Datasets/Task02_Heart_png_sift_test/Test/image
+    #               gt_folder: /home/lthpc/Datasets/Task02_Heart_png_sift_test/Test/mask
+    #             sampler:
+    #               _target_: training.dataset.vos_sampler.RandomUniformSampler
+    #               num_frames: ${scratch.num_frames}
+    #               max_num_objects: ${scratch.max_num_objects}
+    #             multiplier: 1
+    #   shuffle: True
+    #   num_workers: ${scratch.num_train_workers}
+    #   pin_memory: True
+    #   drop_last: True
+    #   collate_fn:
+    #     _target_: training.utils.data_utils.collate_fn
+    #     _partial_: true
+    #     dict_key: all_val
 
   optim:
     amp:
@@ -381,6 +439,20 @@ trainer:
       focal_gamma_obj_score: 0.0
       focal_alpha_obj_score: -1.0
 
+    all_new:
+      _target_: training.loss_fns.MultiStepMultiMasksAndIousFull
+      weight_dict:
+        loss_mask: 20
+        loss_dice: 1
+        loss_iou: 1
+        loss_class: 1
+        loss_boundary: 0.05
+      supervise_all_iou: true
+      iou_use_l1_loss: true
+      pred_obj_scores: true
+      focal_gamma_obj_score: 0.0
+      focal_alpha_obj_score: -1.0
+
     all_val:
       _target_: training.loss_fns.MultiStepMultiMasksAndIous4Val
       weight_dict:
@@ -414,7 +486,7 @@ trainer:
     model_weight_initializer:
       _partial_: True
       _target_: training.utils.checkpoint_utils.load_state_dict_into_model
-      strict: True
+      strict: False
       ignore_unexpected_keys: null
       ignore_missing_keys: null
 

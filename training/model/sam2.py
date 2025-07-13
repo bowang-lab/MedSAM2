@@ -21,7 +21,7 @@ from sam2.utils.misc import concat_points
 
 from training.utils.data_utils import BatchedVideoDatapoint
 
-from sam2.modeling.backbones.boundary_module import BoundaryHead
+from sam2.modeling.boundary_module import BoundaryHead
 
 
 class SAM2Train(SAM2Base):
@@ -69,6 +69,7 @@ class SAM2Train(SAM2Base):
         # of all frames at once. This avoids backbone OOM errors on very long videos in evaluation, but could be slightly slower.
         forward_backbone_per_frame_for_eval=False,
         freeze_image_encoder=True,
+        boundary_head=None,
         **kwargs,
     ):
         super().__init__(image_encoder, memory_attention, memory_encoder, **kwargs)
@@ -103,22 +104,55 @@ class SAM2Train(SAM2Base):
         # A random number generator with a fixed initial seed across GPUs
         self.rng = np.random.default_rng(seed=42)
 
+        # ====== MODIFICATIONS ======
+        self.use_boundary = True
+        self.boundary_head = boundary_head
+
         logging.info(f"freeze_image_encoder status:{freeze_image_encoder}")
         if freeze_image_encoder:
             for p in self.image_encoder.parameters():
                 p.requires_grad = False
 
-        # # Modifications here
-        # boundary_feature_channels = 64
-        # original_fpn_channels = 256
-        # self.boundary_head = BoundaryHead(output_channels=boundary_feature_channels)
-        # # This 1x1 conv will fuse the original features and boundary features
-        # # It takes concatenated features as input and outputs the original channel dimension
-        # self.fusion_conv = torch.nn.Conv2d(
-        #     in_channels=original_fpn_channels + boundary_feature_channels,
-        #     out_channels=original_fpn_channels,
-        #     kernel_size=1,
-        # )
+    def forward_image(self, img_batch: torch.Tensor):
+        """New forward image section derives from base class function
+
+        """
+
+        """Get the image feature on the input batch."""
+        backbone_out = self.image_encoder(img_batch)
+        if self.use_high_res_features_in_sam:
+            # precompute projected level 0 and level 1 features in SAM decoder
+            # to avoid running it again on every SAM click
+            backbone_out["backbone_fpn"][0] = self.sam_mask_decoder.conv_s0(
+                backbone_out["backbone_fpn"][0]
+            )
+            backbone_out["backbone_fpn"][1] = self.sam_mask_decoder.conv_s1(
+                backbone_out["backbone_fpn"][1]
+            )
+
+        # logging.info(
+        #     f'backbone_out["backbone_fpn"] type:{type(backbone_out["backbone_fpn"])}, len:{len(backbone_out["backbone_fpn"])}, 0:shape:{backbone_out["backbone_fpn"][0].shape}, 1:shape:{backbone_out["backbone_fpn"][1].shape}, 2:shape:{backbone_out["backbone_fpn"][2].shape}')
+        # logging.info(f'backbone_out["vision_features"] type:{type(backbone_out["vision_features"])}, shape:{backbone_out["vision_features"].shape}')
+        # logging.info(
+        #     f'backbone_out["vision_pos_enc"] type:{type(backbone_out["vision_pos_enc"])}, len:{len(backbone_out["vision_pos_enc"])}, 0:shape:{backbone_out["vision_pos_enc"][0].shape}, 1:shape:{backbone_out["vision_pos_enc"][1].shape}, 2:shape:{backbone_out["vision_pos_enc"][2].shape}')
+
+        # --- Integration of the Boundary Head ---
+        if self.use_boundary:
+            # logging.info("Using boundary head to enhance high-res features.")
+
+            # Select the highest-resolution feature map as input
+            high_res_fpn = backbone_out['backbone_fpn'][0]
+
+            # Get the enhanced feature and the boundary logits
+            enhanced_fpn_feature, boundary_logits = self.boundary_head(high_res_fpn)
+
+            # 1. Replace the original FPN feature with the enhanced one
+            backbone_out['backbone_fpn'][0] = enhanced_fpn_feature
+
+            # 2. Store the new boundary logits for loss calculation
+            backbone_out["boundary_logits"] = boundary_logits
+
+        return backbone_out
 
     def forward(self, input: BatchedVideoDatapoint):
         if self.training or not self.forward_backbone_per_frame_for_eval:
@@ -358,11 +392,21 @@ class SAM2Train(SAM2Base):
         all_frame_outputs = {}
         all_frame_outputs.update(output_dict["cond_frame_outputs"])
         all_frame_outputs.update(output_dict["non_cond_frame_outputs"])
+
+        # return boundary logits info
+        if self.use_boundary and self.training:
+            # print(f"all_frame_outputs:{all_frame_outputs.keys()}")
+            for key in all_frame_outputs:
+                all_frame_outputs[key]['boundary_logits'] = backbone_out['boundary_logits']
+
         all_frame_outputs = [all_frame_outputs[t] for t in range(num_frames)]
         # Make DDP happy with activation checkpointing by removing unused keys
         all_frame_outputs = [
             {k: v for k, v in d.items() if k != "obj_ptr"} for d in all_frame_outputs
         ]
+
+        # # deliver boundary logits to final part
+        # print(f"type:{type(all_frame_outputs[0])}, keys:{all_frame_outputs[0].keys()}")
 
         return all_frame_outputs
 

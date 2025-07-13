@@ -3,6 +3,7 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
+import logging
 
 import torch
 import torch.distributed
@@ -477,7 +478,6 @@ class SAM2Base(torch.nn.Module):
                 backbone_out["backbone_fpn"][1]
             )
 
-        # TODO: add image processing feature here after image encoder
         return backbone_out
 
     def _prepare_backbone_features(self, backbone_out):
