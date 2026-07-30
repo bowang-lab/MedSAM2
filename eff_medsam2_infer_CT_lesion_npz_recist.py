@@ -380,7 +380,7 @@ def infer_3d(img_npz_file):
         spacing_z = spacing[0]
         spacing_xy = (spacing[1] + spacing[2]) / 2
         multiplier = spacing_xy / spacing_z 
-        diameter /= multiplier
+        diameter *= multiplier
         z_min_per_lab = max(0, z_mid - int(diameter / 2))
         z_max_per_lab = min(img_3D_ori.shape[0] - 1, z_mid + int(diameter / 2))
         gts = gts[z_min_per_lab:z_max_per_lab+1]
